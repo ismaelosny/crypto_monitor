@@ -55,7 +55,7 @@ def atualizar_estado(chat_id, status, ticker=None, parametro=None):
     conn.close()
 
 def buscar_cotacoes_atuais(criptos):
-    texto_resposta = "🪙 *Cotações Atualizadas do Momento:* 🪙\n\n"
+    texto_resposta = "🪙 *Cotações Aktualizadas do Momento:* 🪙\n\n"
     for ticker, regras in criptos.items():
         try:
             ativo = yf.Ticker(ticker)
@@ -83,8 +83,9 @@ def escutar_telegram():
             url = f"{url_base}getUpdates?offset={offset}&timeout=10"
             resposta = requests.get(url).json()
             
-            if "result" in response_json := resposta:
-                for update in response_json["result"]:
+            # CORREÇÃO DA LINHA 86: Tratamento limpo e seguro do dicionário
+            if "result" in resposta:
+                for update in resposta["result"]:
                     offset = update["update_id"] + 1
                     
                     if "message" in update and "text" in update["message"]:
@@ -93,7 +94,7 @@ def escutar_telegram():
                         texto_lower = texto_recebido.lower()
                         
                         # Captura o estado atual do usuário
-                        estado = obtener_estado(chat_id)
+                        estado = obter_estado(chat_id)
                         
                         # --- PROCESSADOR DE MENUS PARA O ADMINISTRADOR (MÁQUINA DE ESTADOS) ---
                         if chat_id == MASTER_ID and estado["status"] != "LIVRE":
@@ -138,4 +139,93 @@ def escutar_telegram():
                                         mapeamento = {1: "preco_piso", 2: "preco_teto", 3: "mayer_piso", 4: "mayer_teto"}
                                         param_nome = mapeamento[opcao_param]
                                         
-                                        atualizar_estado(chat_id, "SALVANDO_ALTERACAO", ticker=ticker,
+                                        atualizar_estado(chat_id, "SALVANDO_ALTERACAO", ticker=ticker, parametro=param_nome)
+                                        requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": f"✍️ Digite o **novo valor numérico** para o parâmetro escolhido (use ponto para decimais):", "parse_mode": "Markdown"})
+                                    else:
+                                        requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": "⚠️ Escolha um número de 1 a 4."})
+                                except ValueError:
+                                    requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": "⚠️ Digite um número válido."})
+                                continue
+
+                            # Estado 3: Recebe o valor final e grava no config.json
+                            if estado["status"] == "SALVANDO_ALTERACAO":
+                                ticker = estado["ticker"]
+                                parametro = estado["parametro"]
+                                try:
+                                    novo_valor = float(texto_recebido.replace(",", "."))
+                                    
+                                    if "preco" in parametro:
+                                        config_atualizada["criptos_monitoradas"][ticker]["regra_valor"][parametro] = novo_valor
+                                    else:
+                                        config_atualizada["criptos_monitoradas"][ticker]["regra_mayer"][parametro] = novo_valor
+                                        
+                                    salvar_config(config_atualizada)
+                                    atualizar_estado(chat_id, "LIVRE")
+                                    
+                                    msg_sucesso = f"✅ *Parâmetro Atualizado com Sucesso!*\n\nMoeda: `{ticker}`\nConfiguração `{parametro}` mudada para: `{novo_valor}`"
+                                    requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": msg_sucesso, "parse_mode": "Markdown"})
+                                except ValueError:
+                                    requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": "⚠️ Valor inválido! Digite apenas números usando ponto para decimal (Ex: 85.50)."})
+                                continue
+
+                        # --- COMANDOS PÚBLICOS E GERAIS ---
+                        
+                        # 1. Comando Preço
+                        if texto_lower in ["/preco", "preco"]:
+                            if chat_id not in chat_ids_autorizados:
+                                continue
+                            mensagem_resposta = buscar_cotacoes_atuais(config_atualizada["criptos_monitoradas"])
+                            requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": mensagem_resposta, "parse_mode": "Markdown"})
+                        
+                        # 2. Comando Ajuda / Convite
+                        elif texto_lower in ["/ajuda", "ajuda", "/start", "começar"]:
+                            link_bot = "https://t.me/CryptoMonitorIsmaelBot"
+                            mensagem_resposta = (
+                                "📋 *CONVITE: MONITOR CRIPTO ISMAEL*\n\n"
+                                "Para começar a receber meus alertas automatizados de oscilação em tempo real "
+                                "e o relatório diário das 18h, siga estes 3 passos rápidos:\n\n"
+                                f"1️⃣ *Abra o Bot:* Clique no link abaixo e aperte o botão **'Iniciar'**:\n"
+                                f"👉 {link_bot}\n\n"
+                                "2️⃣ *Descubra seu ID:* Assim que você iniciar o bot, ele vai mostrar seu ID de usuário na tela.\n\n"
+                                "3️⃣ *Me mande o número:* Copie o ID e passe para mim. Assim que eu ativar na nuvem, seu feed estará ligado! 🚀"
+                            )
+                            requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": mensagem_resposta, "parse_mode": "Markdown"})
+
+                        # 3. Autorizar Novo ID (🔒 Exclusivo do Admin)
+                        elif texto_lower.startswith("/autorizar"):
+                            if chat_id != MASTER_ID:
+                                continue
+                            partes = texto_recebido.split()
+                            if len(partes) < 2:
+                                msg = "⚠️ Uso: `/autorizar ID_AQUI`"
+                            else:
+                                novo_id = partes[1].strip()
+                                if novo_id in chat_ids_autorizados:
+                                    msg = f"📭 O ID `{novo_id}` já está autorizado."
+                                else:
+                                    config_atualizada["credenciais"]["telegram_chat_ids"].append(novo_id)
+                                    salvar_config(config_atualizada)
+                                    msg = f"🚀 *Sucesso!* ID `{novo_id}` adicionado ao painel do monitor."
+                            requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
+
+                        # 4. Painel de Controle de Regras (🔒 Exclusivo do Admin)
+                        elif texto_lower in ["/painel", "painel", "configurar", "/configurar"]:
+                            if chat_id != MASTER_ID:
+                                continue
+                            
+                            texto_menu = "⚙️ *PAINEL DE CONTROLE CRIPTO*\nSelecione a moeda para editar:\n\n"
+                            for idx, (ticker, dados) in enumerate(criptos.items(), start=1):
+                                texto_menu += f"[{idx}] *{dados['nome_amigavel']}* ({ticker})\n"
+                            
+                            texto_menu += "\n👉 *Digite o número da moeda que deseja alterar:* "
+                            
+                            atualizar_estado(chat_id, "AGUARDANDO_PARAMETRO")
+                            requests.post(f"{url_base}sendMessage", json={"chat_id": chat_id, "text": texto_menu, "parse_mode": "Markdown"})
+                            
+        except Exception as e:
+            print(f"❌ Erro no loop do bot: {e}")
+            
+        time.sleep(1)
+
+if __name__ == "__main__":
+    escutar_telegram()
